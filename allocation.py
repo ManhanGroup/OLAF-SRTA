@@ -18,7 +18,7 @@ def load_yaml(filename):
 import time
 import random
 
-
+np.seterr(over='ignore')
 
 
 class model:
@@ -47,11 +47,11 @@ class model:
         start = time.time()
         # This method allocates land use control totals using Monte Carlo simulation
         id = self.config['geo_id']
-        #dev_queue = [] # enumerate a "queue" of development projects to build
+        dev_queue = {} # enumerate a "queue" of development projects to build - really a dictionary
         queue_len = 0
         position = 0
         progress = 0
-        _last_part = 0
+        _last_progress = 0
         print("Allocating queue...")
 
         for LU in self.land_uses:
@@ -59,43 +59,43 @@ class model:
            store_fld = self.land_uses[LU]["store_fld"]
            self.zone_df[store_fld] = 0 # initialize field to which units will be allocated
            print("Total {} units of {} to allocate".format(self.land_uses[LU]['total'],self.land_uses[LU]['name']))
-
-        while len(self.land_uses)>0:
-            LU = random.choice(list(self.land_uses.keys()))
+           dev_queue[LU] = self.land_uses[LU]["total"]
+        
+        units_left = np.sum(list(dev_queue.values()), dtype=float)
+        while units_left>0:
+            LU = rng.choice(list(dev_queue.keys()),p=list(dev_queue.values())/units_left)
+            #LU = random.choice(list(self.land_uses.keys()))
                       
             store_fld = self.land_uses[LU]["store_fld"]
             value_fn=self.land_uses[LU]["value_fn"]
             options = self.sample_alts(LU)
-            utility = options.eval(value_fn,inplace=False).to_numpy()
-            expUtil = np.nan_to_num(np.exp(utility))
+            utility = options.eval(value_fn,inplace=False).to_numpy().astype('float64')
+            #expUtil = np.nan_to_num(np.exp(utility))
+            expUtil = np.exp(utility)
+            mask = np.isfinite(expUtil)
+            expUtil = expUtil[mask]
+            options = options[mask]
+            if options.shape[0]==0:
+                continue
             denom = np.sum(expUtil)
             probs = expUtil/denom
-            zoneSel = rng.choice(options.index,p=np.nan_to_num(probs))
+            zoneSel = rng.choice(options.index,p=probs)
             if self.land_uses[LU]["capacity_fn"]==1:
                alloc = 1
             else: 
-               alloc=int(min(self.land_uses[LU]["total"],np.ceil(self.zone_df.loc[self.zone_df[id]==zoneSel].eval(self.land_uses[LU]["capacity_fn"],inplace=False).squeeze())))
+               alloc=int(min(dev_queue[LU],np.ceil(self.zone_df.loc[self.zone_df[id]==zoneSel].eval(self.land_uses[LU]["capacity_fn"],inplace=False).squeeze())))
             self.zone_df.at[zoneSel,store_fld] += alloc
             #print(self.zone_df.loc[self.zone_df[store_fld]>0][store_fld].count())
-            self.land_uses[LU]["total"]=self.land_uses[LU]["total"]-alloc
-
-            remaining = int(self.land_uses[LU]["total"])
-            #print("Remaining {} {}  to allocate".format(self.land_uses[LU]['total'] , self.land_uses[LU]['name']))
-            if self.land_uses[LU]["total"]==0:
-               self.land_uses.pop(LU, None)            
-            
+            dev_queue[LU]=dev_queue[LU]-alloc
+            units_left = units_left-alloc
+            # if self.land_uses[LU]["total"]==0:
+            #    self.land_uses.pop(LU, None)
 
             position = position + alloc
             progress = round(100*(position)/queue_len,0)
-            part = round((progress % 10)/2,0)
-            if part != _last_part:
-                if part == 0:
-                    print(f"{progress}%")
-                else:
-                    print(".", end="", flush=True)
-
-            _last_part = part
-
+            if progress % 5 == 0 and progress!= _last_progress:
+                print(f"{progress}% ({position} of {queue_len})")
+            _last_progress = progress
         
         run_min = round((time.time()-start)/60,1)
         print(f"Total run time = {run_min} minutes")
